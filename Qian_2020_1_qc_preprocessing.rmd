@@ -1,0 +1,206 @@
+---
+title: "Qian_2020_Analysis"
+author: "Shuai"
+date: "09/17/2024"
+output: html_document
+---
+
+```{r include=FALSE}
+library(renv)
+library(Seurat)
+library(dplyr)
+library(ggplot2)
+library(patchwork)
+library(Matrix)
+library(gdata)
+library(reshape)
+library(tidyverse)
+library(DoubletFinder)
+library(harmony)
+```
+# 1. Read the blueprint CRC samples passed sample-level QC
+
+```{r Get sample names}
+# Metadata of samples deposited at E-MTAB-8107
+blueprint_CRC_metadata_E_MTAB <- data.table::fread("data/Qian_2020/E-MTAB-8107.sdrf.txt") %>%
+  `colnames<-`(str_remove_all(colnames(.), "(.+\\[)|\\]")) %>%
+  as.data.frame() %>% select(1:10) %>%
+  filter(`organism part` == "colorectum") 
+
+blueprint_CRC_sample_id <- blueprint_CRC_metadata_E_MTAB$`Source Name`
+```
+
+```{r Download count matrices from E-MTAB-8170, eval=FALSE, message=FALSE, warning=FALSE, include=FALSE}
+for(sample in blueprint_CRC_sample_id) {
+  system(paste0("curl -O https://ftp.ebi.ac.uk/biostudies/fire/E-MTAB-/107/E-MTAB-8107/Files/scr", sample, ".counts.csv"))
+}
+
+```
+
+```{r load data}
+blueprint_CRC_samples <- sapply(blueprint_CRC_sample_id, function(id) {
+  count = data.table::fread(paste0("data/Qian_2020/E-MTAB-8107/scr", id, ".counts.csv")) %>%
+    column_to_rownames("V1")
+  sample = CreateSeuratObject(counts = count, min.cells = 0, min.features = 0, project = id)
+  sample[["percent.mt"]] = PercentageFeatureSet(sample, pattern = "^MT[-]")
+  sample[["percent.rb"]] = PercentageFeatureSet(sample, pattern = "^RP[SL][[:digit:]]")
+  return(sample)
+}, simplify = FALSE, USE.NAMES = TRUE)
+```
+
+# 2. Merge blueprint CRC scRNA-seq samples
+
+```{r fig.height=3.5, fig.width=4.5}
+# Merge all Seurat objects. Use the first Seurat object as the base and merge the rest into it.
+blueprint_CRC_raw <- merge(blueprint_CRC_samples[[1]], y = blueprint_CRC_samples[-1],
+                           project = "blueprint_CRC")
+  
+blueprint_CRC_raw$orig.ident = factor(blueprint_CRC_raw$orig.ident)
+saveRDS(blueprint_CRC_raw, file = "R_objects/Qian_2020/blueprint_CRC_raw.rds")
+```
+
+```{r}
+# The number of cells per sample
+table(blueprint_CRC_raw$orig.ident)
+```
+```{r}
+range(blueprint_CRC_raw$nCount_RNA)   # 395 113374
+range(blueprint_CRC_raw$nFeature_RNA) # 194 5975
+range(blueprint_CRC_raw$percent.mt)   # 0.063 25.9829
+
+# cutoffs
+min.nCount_RNA <- 400 
+min.nFeature_RNA <- 200
+max.nFeature_RNA <- 6000
+max.pct.mito <- 25
+max.pct.ribo <- 50
+```
+
+```{r fig.width = 6, fig.height = 6}
+# The Gene counts per cell
+
+plot(sort(blueprint_CRC_raw$nFeature_RNA), xlab='cell', ylab='genes per cell', log='y')+
+  abline(h=min.nFeature_RNA, col="red", lwd=2)+
+  abline(h=max.nFeature_RNA, col="red", lwd=2)
+summary(blueprint_CRC_raw$nFeature_RNA)
+length(which(blueprint_CRC_raw$nFeature_RNA < min.nFeature_RNA))
+length(which(blueprint_CRC_raw$nFeature_RNA < min.nFeature_RNA))/dim(blueprint_CRC_raw)[2]
+# 64 ~ 0.0002% of cells do not pass the cut off and are filtered
+length(which(blueprint_CRC_raw$nFeature_RNA > max.nFeature_RNA))
+length(which(blueprint_CRC_raw$nFeature_RNA > max.nFeature_RNA))/dim(blueprint_CRC_raw)[2]
+# 0 ~ 0% of cells do not pass the cut off and are filtered
+```
+
+```{r %mitochondrial, fig.width = 7, fig.height = 7}
+# Investigate the cutoff for mito and rb
+plot(sort(blueprint_CRC_raw$percent.mt), xlab = "cells", ylab = "percentage mitochondrial counts")+
+  abline(h=max.pct.mito * 100, col="red", lwd=2)
+  summary(blueprint_CRC_raw$percent.mt)
+length(which(blueprint_CRC_raw$percent.mt > max.pct.mito))
+length(which(blueprint_CRC_raw$percent.mt > max.pct.mito))/dim(blueprint_CRC_raw)[2] * 100
+  # 64 ~ 0.14% of cells do not pass the cut off and are filtered
+```
+
+```{r %ribosomal, fig.width = 7, fig.height = 7}
+plot(sort(blueprint_CRC_raw$percent.rb), xlab = "cells", ylab = "percentage ribosomal counts")+
+  abline(h=max.pct.ribo, col="red", lwd=2)
+  summary(blueprint_CRC_raw$percent.rb)
+  length(which(blueprint_CRC_raw$percent.rb > max.pct.ribo))
+  length(which(blueprint_CRC_raw$percent.rb > max.pct.ribo))/dim(blueprint_CRC_raw)[2] * 100
+  # 609 ~ 1.36% of cells do not pass the cut off and are filtered
+```
+
+```{r Complexity score, fig.width = 6, fig.height = 6}
+# The raw stats information
+blueprint_CRC_raw$log10GenesPerUMI = log10(blueprint_CRC_raw$nFeature_RNA)/log10(blueprint_CRC_raw$nCount_RNA)
+  
+min.complex_score <- 0.73
+# Plot
+plot(sort(blueprint_CRC_raw$log10GenesPerUMI), xlab='cell', ylab='Complexity score', log='y')+
+  abline(h=min.complex_score, col="red", lwd=2)
+summary(blueprint_CRC_raw$log10GenesPerUMI)
+length(which(blueprint_CRC_raw$log10GenesPerUMI < min.complex_score))
+length(which(blueprint_CRC_raw$log10GenesPerUMI < min.complex_score))/dim(blueprint_CRC_raw)[2] * 100
+#  of cells do not pass the cut off and are filtered
+```
+
+```{r fig.width = 7, fig.height = 6, warning=FALSE}
+# gene vs UMI counts + mito percent
+metadata = blueprint_CRC_raw@meta.data
+metadata %>% 
+  ggplot(aes(x=nCount_RNA, y=nFeature_RNA, color=percent.mt)) + 
+    	geom_point() + 
+    	scale_colour_gradient(low = "gray90", high = "blue") +
+    	stat_smooth(method=lm) +
+    	scale_x_log10() + 
+    	scale_y_log10() + 
+    	theme_classic() +
+    	geom_vline(xintercept = min.nCount_RNA) +
+    	geom_hline(yintercept = min.nFeature_RNA) +
+    	geom_hline(yintercept = max.nFeature_RNA)
+    	
+
+# gene vs UMI counts + rb percent
+  metadata %>% 
+    	ggplot(aes(x=nCount_RNA, y=nFeature_RNA, color=percent.rb)) + 
+    	geom_point() + 
+    	scale_colour_gradient(low = "gray90", high = "blue") +
+    	stat_smooth(method=lm) +
+    	scale_x_log10() + 
+    	scale_y_log10() + 
+    	theme_classic() +
+    	geom_vline(xintercept = min.nCount_RNA) +
+    	geom_hline(yintercept = min.nFeature_RNA)+
+    	geom_hline(yintercept = max.nFeature_RNA)
+  
+# gene vs UMI counts + complexity score
+  metadata %>% 
+    	ggplot(aes(x=nCount_RNA, y=nFeature_RNA, color=log10GenesPerUMI)) + 
+    	geom_point() + 
+    	scale_colour_gradient(low = "gray90", high = "blue") +
+    	stat_smooth(method=lm) +
+    	scale_x_log10() + 
+    	scale_y_log10() + 
+    	theme_classic() +
+    	geom_vline(xintercept = min.nCount_RNA) +
+    	geom_hline(yintercept = min.nFeature_RNA)+
+    	geom_hline(yintercept = max.nFeature_RNA)  
+  
+  
+metadata %>% 
+  mutate(remove = ifelse((nCount_RNA >= min.nCount_RNA) &
+          (nFeature_RNA >= min.nFeature_RNA) & (nFeature_RNA <= max.nFeature_RNA) & 
+          (log10GenesPerUMI >= min.complex_score) & 
+          (percent.mt <= max.pct.mito) & (percent.rb <= max.pct.ribo),
+         "no", "yes")) %>%
+  arrange(remove) %>%
+  ggplot(aes(x=nCount_RNA, y=nFeature_RNA)) + 
+    	geom_point(aes(color=remove)) + 
+    	scale_color_manual(values = c("grey90", "red")) +
+    	stat_smooth(method=lm) +
+    	scale_x_log10() + 
+    	scale_y_log10() + 
+    	theme_classic() +
+    	geom_vline(xintercept = min.nCount_RNA) +
+    	geom_hline(yintercept = min.nFeature_RNA)+
+    	geom_hline(yintercept = max.nFeature_RNA)  
+
+```
+
+```{r}
+# Save the cells
+filtered_seurat <- subset(
+  x = blueprint_CRC_raw, 
+  subset= (nCount_RNA >= min.nCount_RNA) &
+          (nFeature_RNA >= min.nFeature_RNA) & (nFeature_RNA <= max.nFeature_RNA) & 
+          (log10GenesPerUMI >= min.complex_score) & 
+          (percent.mt <= max.pct.mito) & (percent.rb <= max.pct.ribo) )
+dim(filtered_seurat) # 43539 cells after QC
+
+# check the cell filtration
+dim(blueprint_CRC_raw)[2] - dim(filtered_seurat)[2]
+(dim(blueprint_CRC_raw)[2] - dim(filtered_seurat)[2])/dim(blueprint_CRC_raw)[2] * 100 # 2.56% n=1145
+  
+saveRDS(filtered_seurat, file = "R_objects/Qian_2020/blueprint_CRC_filtered.rds")
+  
+```

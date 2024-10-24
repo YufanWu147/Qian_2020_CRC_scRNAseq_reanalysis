@@ -1,0 +1,324 @@
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r init, warning=FALSE, message=FALSE}
+source("Qian_2020_0_packages_functions.R")
+blueprint_CRC = readRDS(file = "R_objects/Qian_2020/blueprint_CRC_harmony.rds")
+```
+
+# 1. Read the merged Seurat Object and add clinical informaiton
+
+```{r fig.height=5.5, fig.width=25}
+# read the raw data
+blueprint_CRC = readRDS(file = "R_objects/Qian_2020/blueprint_CRC_raw.rds")
+
+# metadata downloaded from https://lambrechtslab.sites.vib.be/en/pan-cancer-blueprint-tumour-microenvironment-0
+blueprint_CRC_metadata <- data.table::fread("data/Qian_2020/2099-Colorectalcancer_metadata.csv.gz") %>%
+  column_to_rownames("Cell") %>%
+  select(-nGene, -nUMI)
+
+# add metadata
+blueprint_CRC <- AddMetaData(blueprint_CRC, blueprint_CRC_metadata)
+```
+
+```{r}
+# check the clinical info
+table(blueprint_CRC$PatientNumber, blueprint_CRC$TumorSite)
+table(blueprint_CRC$PatientNumber, blueprint_CRC$CellType)
+```
+
+# 2. Run standard Seurat clustering and perform integration with Harmony
+
+```{r fig.height=4, fig.width=7}
+blueprint_CRC <- NormalizeData(blueprint_CRC, normalization.method = "LogNormalize", scale.factor = 10000) # try sctransformation
+blueprint_CRC <- FindVariableFeatures(blueprint_CRC, selection.method = "vst", nfeatures = 2000)
+blueprint_CRC <- ScaleData(blueprint_CRC)
+blueprint_CRC <- RunPCA(blueprint_CRC, npcs = 70)
+
+ElbowPlot(blueprint_CRC, ndims = 70)
+ggsave("figures/Qian_2020/Elbow.png", width = 7, height = 4)
+
+## Without integration
+blueprint_CRC <- FindNeighbors(blueprint_CRC, reduction = "pca", dims = 1:50)
+blueprint_CRC <- FindClusters(blueprint_CRC, resolution = 1, cluster.name = "unintegrated_clusters")
+
+blueprint_CRC <- RunUMAP(blueprint_CRC, dims = 1:50, reduction = "pca", reduction.name = "umap.unintegrated")
+blueprint_CRC$PatientNumber_TumorSite = paste0(blueprint_CRC$PatientNumber, "_", blueprint_CRC$TumorSite)
+DimPlot(blueprint_CRC, reduction = "umap.unintegrated", ncol = 2,
+        group.by = c("seurat_clusters", "PatientNumber", "TumorSite", "PatientNumber_TumorSite"), cols = c25)
+ggsave("figures/Qian_2020/DimPlot_unintegrated.png", width = 12, height = 8)
+
+## Perform Harmony integration
+blueprint_CRC <- IntegrateLayers(
+  object = blueprint_CRC, method = HarmonyIntegration,
+  new.reduction = "harmony", 
+  verbose = FALSE
+)
+
+blueprint_CRC <- RunUMAP(blueprint_CRC, reduction = "harmony", dims = 1:50,
+                         reduction.name = "umap.harmony")
+
+blueprint_CRC <- FindNeighbors(blueprint_CRC, reduction = "harmony", dims = 1:50)
+blueprint_CRC <- FindClusters(blueprint_CRC, resolution = 1, 
+                              cluster.name = "harmony_clusters")
+
+
+saveRDS(blueprint_CRC, file = "R_objects/Qian_2020/blueprint_CRC_harmony.rds")
+```
+
+```{r fig.width = 18, fig.height = 5.5, warning=FALSE}
+# The umap grouped by the patient id (paired)
+p <- DimPlot(blueprint_CRC, reduction = "umap.harmony", ncol = 2, pt.size = 0.1,
+        group.by = c("seurat_clusters", "PatientNumber", "TumorSite", "orig.ident"),
+        cols = c25)
+
+ggsave("figures/Qian_2020/DimPlot_harmony.png", width = 15, height = 10)
+
+```
+
+
+```{r fig.width = 18, fig.height = 5.5, warning=FALSE}
+# The umap grouped by the patient id (paired)
+p <- DimPlot(blueprint_CRC, reduction = "umap.harmony", ncol = 2, pt.size = 0.1,
+        group.by = c("harmony_clusters", "CellType"),
+        cols = c25)
+p <- lapply(p, function(x) {x$data$cluster <- blueprint_CRC$harmony_clusters
+        LabelClusters(x, id = "cluster", size = 4, repel = TRUE, max.overlaps = Inf)})
+p[[1]] / p[[2]]
+ggsave("figures/Qian_2020/DimPlot_harmony_author_annot.png", width = 7, height = 10)
+```
+
+
+```{r fig.width = 10, fig.height = 5, warning=FALSE}
+# The umap grouped by the patient id (paired)
+p <- DimPlot(blueprint_CRC, reduction = "umap.harmony", split.by = c("TumorSite"),
+        group.by = "PatientNumber", ncol = 3,
+          pt.size = 0.1, label = FALSE, cols = c25)
+ggsave("figures/Qian_2020/DimPlot_harmony_split_TumorSite.png", 
+       width = 12, height = 4.5)
+```
+
+
+# 3. Check the overall gene expression
+
+```{r fig.width = 15, fig.height = 9, warning=FALSE}
+# Check the GE  
+FeaturePlot(blueprint_CRC, reduction = "umap.harmony", 
+            features = c("PTPRC", # CD45, infiltrated immune cells 
+                         "COL1A2",# Fibroblast 
+                         "PECAM1",# Endothelial cells
+                         "EPCAM"), # Epi
+                         ncol = 2, label = TRUE, repel = TRUE)
+ggsave("figures/Qian_2020/Featureplot_broad_annotation.png", 
+       width = 9, height = 7)
+
+```
+
+```{r, fig.width=9, fig.height=4}
+T_markers <- c("CD3E", "CD3D", "CD3G",            # T cells
+               "CD4", "FOXP3", "CTLA4", "IL2RA",  # Treg
+               "CD8A", "CD8B",                    # CD8+ T
+               "KLRD1", "NKG7", "KLRK1",          # NK
+               "TRDC", "TRGC2",
+               "CD79A", "CD79B",                  # B cells
+               "IL7R",  "TCF7", "SELL", "ZBTB16")
+
+DotPlot(blueprint_CRC, T_markers, cols = c("grey90", "brown2")) +
+  coord_flip() + scale_x_discrete(limits = rev) + 
+  theme(axis.text.y = element_text(face = 3),
+        axis.text.x = element_text(angle = 45))
+ggsave("figures/Qian_2020/Dotplot_Tcell_markers.png", width = 9, height = 4)
+```
+
+
+```{r}
+Markers_Chu_2024_FigS1 <- c(
+  "PLVAP", "VWF",  # Endothelial
+  "EPCAM",         # Epithelial/Magligant cells
+  "CLU", "CRYAB",  # Glial
+  "COL1A1", "COL1A2",        # Fibroblast
+  "PTPRC",                   # Immune
+  "MS4A1", "CD79A", "CD79B", # B cells
+  "CD3D", "CD3E", "CD3G",    # T cells
+  "CD8A", "CD8B",             # CD8+ T cells
+  "CD4",                      # CD4+ T cells
+  "FOXP3", "CTLA4", "IL2RA",  # Tregs
+  "KLRF1",                    # NK cells
+  "TPSAB1",                   # Mast cells
+  "ITGAX", "ITGAM"            # Macrophage/Monocyte/DCs
+  )
+
+DotPlot(blueprint_CRC, Markers_Chu_2024_FigS1, cols = c("grey90", "brown2")) +
+  coord_flip() + scale_x_discrete(limits = rev) + 
+  theme(axis.text.y = element_text(face = 3),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("figures/Qian_2020/Dotplot_Chu_2024_FigS1_markers.png", width = 9, height = 5)
+
+```
+
+
+```{r}
+Markers_Zhang_2023_FigS1 <- c(
+  "PTPRC",
+  "CD3D", "CD3E", "CD3G",                                # T cells
+  "CD4", "ICOS", "TNFRSF4", "KLRB1", "IL7R", "SPOCK2",   # CD4+ T cells
+  "CD8A", "CD8B", "NKG7", "GZMK", "GZMA", "CCL5",        # CD8+ T cells
+  "FGFBP2", "GNLY", "KLRF1", "GZMH", "KLRD1",            # NK cells
+  "MS4A1", "CD79A", "CD79B", "BANK1", "VPREB3", "SMIM14", "TNFRSF13C", # B cells
+  "JCHAIN", "MZB1", "DERL3", "TNFRSF17", "PRDX4",        # Plasma B
+  "C1QA", "C1QB", "C1QC", "APOE", "APOC1",     # Macrophage
+  "S100A8", "S100A9", "IL1B", "IL1RN", "G0S2", # Monocyte
+  "LILRA4", "TSPAN13", "PLD4", "SOX4", "IL3RA", # DC
+  "TPSAB1", "TPSB2", "CPA3", "HPGDS"             # Mast cells
+  )
+
+DotPlot(blueprint_CRC, Markers_Zhang_2023_FigS1, cols = c("grey90", "brown2")) +
+  coord_flip() + scale_x_discrete(limits = rev) + 
+  theme(axis.text.y = element_text(face = 3),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("figures/Qian_2020/Dotplot_Zhang_2023_markers.png", width = 9, height = 8)
+```
+
+```{r}
+blueprint_CRC[["joined"]] <- JoinLayers(blueprint_CRC[["RNA"]])
+DefaultAssay(blueprint_CRC) <- "joined"
+
+blueprint_CRC <- CellCycleScoring(
+  blueprint_CRC, s.features = cc.genes.updated.2019$s.genes,
+  g2m.features = cc.genes.updated.2019$g2m.genes, assay = "joined", set.ident = FALSE)
+
+FeaturePlot(blueprint_CRC, reduction = "umap.harmony", 
+            features = c("S.Score", "G2M.Score"), ncol = 1)
+ggsave("figures/Qian_2020/Featureplot_CellCycle_Score.png", 
+       width = 5, height = 7)
+VlnPlot(blueprint_CRC, features = c("S.Score", "G2M.Score"), ncol = 1, cols = c25)
+ggsave("figures/Qian_2020/Vlnplot_CellCycle_Score.png", 
+       width = 9, height = 6)
+
+FeaturePlot(blueprint_CRC, reduction = "umap.harmony", 
+            features = c("percent.mt", "percent.rb"), ncol = 1)
+ggsave("figures/Qian_2020/Featureplot_percent.mt_rb.png", 
+       width = 5, height = 7)
+VlnPlot(blueprint_CRC, features = c("percent.mt", "percent.rb"), ncol = 1, cols = c25)
+ggsave("figures/Qian_2020/Vlnplot_percent.mt_rb.png", 
+       width = 9, height = 6)
+
+```
+
+```{r}
+blueprint_CRC_markers  <- FindAllMarkers(blueprint_CRC, logfc.threshold = 0.25, 
+                                         only.pos = TRUE, min.pct = 0.25)
+saveRDS(blueprint_CRC_markers, "R_objects/Qian_2020/blueprint_CRC_markers.rds")
+
+top5_markers <- blueprint_CRC_markers %>%
+  group_by(cluster) %>%
+  filter(p_val_adj < 0.05) %>%
+  arrange(desc(avg_log2FC)) %>%
+  slice(1:5) %>%
+  pull(gene) %>% unique
+
+blueprint_CRC_markers %>%
+  group_by(cluster) %>%
+  filter(p_val_adj < 0.05) %>%
+  arrange(desc(avg_log2FC)) %>%
+  slice(1:10) %>%
+  summarise(gene = paste(gene, collapse = ", ")) %>% View
+
+DotPlot(blueprint_CRC, top5_markers) +
+  scale_color_gradientn(colors = rev(brewer.pal(11, "RdBu"))) +
+  coord_flip() + scale_x_discrete(limits = rev) + 
+  theme(axis.text.y = element_text(face = 3),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("figures/Qian_2020/Dotplot_top5_markers.png", width = 9, height = 20)
+
+```
+
+
+```{r}
+perc_bar(blueprint_CRC@meta.data, folder = "figures/Qian_2020", pal = c25)
+perc_bar(blueprint_CRC@meta.data, by = "PatientNumber", folder = "figures/Qian_2020", pal = c25)
+perc_bar(blueprint_CRC@meta.data, by = "TumorSite",
+         folder = "figures/Qian_2020", 
+         pal = ggpubfigs::friendly_pals$contrast_three[c(2, 3, 1)])
+```
+
+```{r}
+markers_T <- c(
+  "CD3G", "CD4", "CXCL13", "CD8A",                             # T cells
+  "TNFSF10", "GZMA", "GZMB", "NKG7", "PRF1", "IFNG", "CST7",   # Cytotoxic T
+  "SELL", "LEF1", "TCF7", "CCR7",                              # Naive T
+  "TGFB1", "IL7", "TGFBR1", "IL2RA", "TGFB3", "IL4R", "FOXP3", # Regulatory
+  "TIGIT", "HAVCR2", "LAG3", "KLRC1", "PDCD1",                 # Exhausted
+  "TNFRSF9", "TNFRSF14", "TNFRSF25", "SLAMF1", "ICOS", "CD226",# Co-stimulatory
+  "HSPB1", "HSPA1A", "HSPE1",                                  # HSP+ T cells
+  "TRDC", "TRGC1",                                             # gd T cells
+  "NCAM1"                                                      # NK
+  )
+
+DotPlot(blueprint_CRC, markers_T, cols = c("grey90", "brown2")) +
+  coord_flip() + scale_x_discrete(limits = rev) + 
+  theme(axis.text.y = element_text(face = 3),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("figures/Qian_2020/Dotplot_T_markers.png", width = 9, height = 7)
+
+```
+
+```{r}
+Marker_Qi_2022 <- c("EPCAM", "CDH1", "COL1A1", "COL3A1", "CDH5", "PECAM1", "S100B",
+                    "CDH2", "MS4A1", "CD79A", "CD19", "SDC1", "MZB1", 
+                    "CD3E", "CD3G", "CD14", "FCGR3A", "IL1RL1", "MS4A2")
+DotPlot(blueprint_CRC, Marker_Qi_2022, cols = c("grey90", "brown2")) +
+  coord_flip() + scale_x_discrete(limits = rev) + 
+  theme(axis.text.y = element_text(face = 3),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("figures/Qian_2020/Dotplot_markers_Qi_2022.png",
+       width = 9, height = 4)
+```
+
+```{r}
+Fibroblast_markers <- c(
+  "COL1A1", "COL1A2",        # Fibroblast
+  "INHBA",                   # CAF (Pelka et al 2021)
+  "FAP", "COL10A1", "MMP11", "CTHRC1", "SLC12A8", "F2R", "COL12A1", # CAF (Kang et al 2024)
+  "ACTA2", "TAGLN", "PDGFA", # CAF-A
+  "MMP2", "DCN",   # CAF-B
+  "S100A4", "DPT", "MFAP5", "SFRP1", "SFRP2")    # NMF
+
+DotPlot(blueprint_CRC, Fibroblast_markers, cols = c("grey90", "brown2")) +
+  coord_flip() + scale_x_discrete(limits = rev) + 
+  theme(axis.text.y = element_text(face = 3),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+ggsave("figures/Qian_2020/Dotplot_Fibroblast_markers.png",
+       width = 9, height = 5.5)
+
+DotPlot(blueprint_CRC, c("CHST1", "FOLH1", "MMP15"), cols = c("grey90", "brown2")) + 
+    coord_flip() + scale_x_discrete(limits = rev) + 
+  theme(axis.text.y = element_text(face = 3),
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r}
+blueprint_CRC$log10.nCount_RNA <- log10(blueprint_CRC$nCount_RNA)
+blueprint_CRC$log10.Feature_RNA <- log10(blueprint_CRC$nFeature_RNA)
+FeaturePlot(blueprint_CRC, c("log10.nCount_RNA", "log10.Feature_RNA",
+                             "percent.mt", "percent.rb")) &
+  scale_color_gradientn(colors = rev(brewer.pal(11, "RdBu")))
+ggsave("figures/Qian_2020/FeaturePlot_QC_metrics.png", width = 9, height = 7)
+VlnPlot(blueprint_CRC, c("log10.nCount_RNA", "log10.Feature_RNA",
+                         "percent.mt", "percent.rb"), 
+        cols = c25, ncol = 1, pt.size = 0) & labs(x = NULL)
+ggsave("figures/Qian_2020/VlnPlot_QC_metrics.png", width = 7, height = 8)
+
+
+blueprint_CRC_Fibroblast@meta.data %>% 
+  ggplot(aes(x=nCount_RNA, y=nFeature_RNA, color=harmony_clusters)) +
+  geom_point(size = 0.1) + 
+  scale_color_manual(values = c25) +
+  # scale_colour_gradient(low = "gray90", high = "blue") +
+  # stat_smooth(method=lm) +
+  scale_x_log10() + 
+  scale_y_log10() + 
+  theme_classic()  
+```
