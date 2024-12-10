@@ -1,13 +1,15 @@
 library(Seurat)
 library(sctransform)
 library(patchwork)
+library(cowplot)
 library(Matrix)
 library(gdata)
 library(reshape)
 library(tidyverse)
 library(parallel)
-# library(BPCells)
 library(RColorBrewer)
+library(speckle)
+library(limma)
 
 c25 <- c("dodgerblue2", "#E31A1C", "green4", "#6A3D9A", "#FF7F00","black", "gold1", 
          "skyblue2", "#FB9A99", "palegreen2", "#CAB2D6", "#FDBF6F", "gray70", "khaki2", 
@@ -282,3 +284,11 @@ Markers_Qi_2022_macrophage_top5 <- Markers_Qi_2022_macrophage %>%
 
 Chen_2024_signatures <- readxl::read_xlsx("data/signatures/Chen_2024_TableS2.xlsx", skip = 1) %>%
   select(cluster = `cell subtype`, gene, everything())
+
+Markers_Ji_2024 <- readxl::read_xlsx("data/signatures/Markers_Ji_2024_TableS5.xlsx") %>%
+  mutate(`Marker gene` = str_split(`Marker gene`, ", ")) %>%
+  unnest(cols = c(`Marker gene`)) %>%
+  rename("gene" = "Marker gene", "cluster" = "abbreviation") %>%
+  mutate(cluster = factor(cluster, unique(.$cluster))) %>%
+  mutate(gene = factor(gene, unique(.$gene))) %>%
+  group_by(gene) %>% slice(1) %>% arrange(cluster, gene)

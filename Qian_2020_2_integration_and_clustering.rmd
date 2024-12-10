@@ -7,7 +7,7 @@ source("Qian_2020_0_packages_functions.R")
 blueprint_CRC = readRDS(file = "R_objects/Qian_2020/blueprint_CRC_harmony.rds")
 ```
 
-# 1. Read the merged Seurat Object and add clinical informaiton
+# 1. Read the merged Seurat Object and add clinical information
 
 ```{r fig.height=5.5, fig.width=25}
 # read the raw data

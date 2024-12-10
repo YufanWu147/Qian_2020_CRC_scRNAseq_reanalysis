@@ -22,7 +22,7 @@ blueprint_CRC_T_NK <- RunUMAP(
   reduction.name = "umap.harmony")
 
 blueprint_CRC_T_NK <- FindNeighbors(blueprint_CRC_T_NK, reduction = "harmony", dims = 1:50)
-blueprint_CRC_T_NK <- FindClusters(blueprint_CRC_T_NK, resolution = 0.,
+blueprint_CRC_T_NK <- FindClusters(blueprint_CRC_T_NK, resolution = 0.5,
                                       cluster.name = "harmony_clusters_T_NK")
 
 
